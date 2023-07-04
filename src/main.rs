@@ -10,14 +10,7 @@ enum Opcode {
     Right(i32),
     Dot,
     Comma,
-}
-#[derive(Debug)]
-enum TreeOpcode {
-    Add(i32),
-    Loop(Vec<TreeOpcode>),
-    Right(i32),
-    Dot,
-    Comma,
+    Clear,
 }
 #[derive(Copy, Clone)]
 enum BasicOpcode {
@@ -44,82 +37,8 @@ fn to_basic_opcode(c: u8) -> Option<BasicOpcode> {
         _ => None,
     }
 }
-fn generate_opcodes(tree: &[TreeOpcode], buffer: &mut Vec<Opcode>) {
-    for opcode in tree {
-        match opcode {
-            TreeOpcode::Add(i) => buffer.push(Opcode::Add(*i as u8)),
-            TreeOpcode::Right(i) => buffer.push(Opcode::Right(*i)),
-            TreeOpcode::Dot => buffer.push(Opcode::Dot),
-            TreeOpcode::Comma => buffer.push(Opcode::Comma),
-            TreeOpcode::Loop(v) => {
-                let index_start = buffer.len();
-                buffer.push(Opcode::BranchZero(0));
-                generate_opcodes(v, buffer);
-                let index_end = buffer.len();
 
-                buffer[index_start] = Opcode::BranchZero(index_end as i32 - index_start as i32);
-                buffer.push(Opcode::BranchNotZero(index_start as i32 - index_end as i32));
-            }
-        }
-    }
-}
-
-fn match_block(iter: &mut impl Iterator<Item = BasicOpcode>) -> Vec<TreeOpcode> {
-    let mut buffer: Vec<TreeOpcode> = Vec::new();
-
-    loop {
-        let Some(next) = iter.next() else { return buffer; };
-
-        match next {
-            BasicOpcode::Add => {
-                if let Some(TreeOpcode::Add(prev)) = buffer.last_mut() {
-                    *prev += 1;
-                    if *prev == 0 {
-                        buffer.pop();
-                    }
-                } else {
-                    buffer.push(TreeOpcode::Add(1));
-                }
-            }
-            BasicOpcode::Sub => {
-                if let Some(TreeOpcode::Add(prev)) = buffer.last_mut() {
-                    *prev -= 1;
-                    if *prev == 0 {
-                        buffer.pop();
-                    }
-                } else {
-                    buffer.push(TreeOpcode::Add(-1));
-                }
-            }
-            BasicOpcode::Right => {
-                if let Some(TreeOpcode::Right(prev)) = buffer.last_mut() {
-                    *prev += 1;
-                    if *prev == 0 {
-                        buffer.pop();
-                    }
-                } else {
-                    buffer.push(TreeOpcode::Right(1));
-                }
-            }
-            BasicOpcode::Left => {
-                if let Some(TreeOpcode::Right(prev)) = buffer.last_mut() {
-                    *prev -= 1;
-                    if *prev == 0 {
-                        buffer.pop();
-                    }
-                } else {
-                    buffer.push(TreeOpcode::Right(-1));
-                }
-            }
-            BasicOpcode::Dot => buffer.push(TreeOpcode::Dot),
-            BasicOpcode::Comma => buffer.push(TreeOpcode::Comma),
-            BasicOpcode::Open => buffer.push(TreeOpcode::Loop(match_block(iter))),
-            BasicOpcode::Close => return buffer,
-        };
-    }
-}
-
-fn generate_opcodes_direct(
+fn generate_opcodes(
     mut iter: impl Iterator<Item = BasicOpcode>,
 ) -> Result<Vec<Opcode>, &'static str> {
     let mut buffer = Vec::new();
@@ -166,8 +85,13 @@ fn generate_opcodes_direct(
                 let other = open_stack.pop().ok_or("unbalanced brackets: extra ]")?;
                 let this = buffer.len();
                 let diff = (this - other) as i32;
-                buffer.push(BranchNotZero(-diff));
                 buffer[other] = BranchZero(diff);
+
+                if let &[.., BranchZero(_), Add(255)] = &buffer[..] {
+                    buffer.truncate(buffer.len() - 2);
+                    buffer.push(Clear);
+                }
+                buffer.push(BranchNotZero(-diff));
             }
             BasicOpcode::Dot => buffer.push(Dot),
             BasicOpcode::Comma => buffer.push(Comma),
@@ -200,7 +124,9 @@ fn main() -> Result<(), &'static str> {
 
     let data_len = 1_usize << 24;
 
-    let opcodes = generate_opcodes_direct(program_basic_opcodes.iter().copied())?;
+    let opcodes = generate_opcodes(program_basic_opcodes.iter().copied())?;
+
+    println!("{:?}", &opcodes);
 
     println!("allocating buffer...");
     let mut data: Vec<u8> = (0..data_len).map(|_| 0).collect();
@@ -246,6 +172,7 @@ fn execute(opcodes: &[Opcode], data: &mut [u8], input: &[u8]) {
             Opcode::Comma => {
                 data[dp as usize] = input.next().unwrap();
             }
+            Opcode::Clear => data[dp as usize] = 0,
         }
         pc += 1
     }
