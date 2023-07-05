@@ -1,4 +1,5 @@
 use std::io::Read;
+use std::io::Write;
 
 #[derive(Debug, Eq, PartialEq)]
 enum Opcode {
@@ -151,21 +152,23 @@ fn main() -> Result<(), &'static str> {
 
     let program_basic_opcodes: Vec<_> = basic_opcodes_iter.collect();
 
-    let data_len = 1_usize << 24;
+    //let data_len = 1_usize << 24;
 
     let opcodes = generate_opcodes(program_basic_opcodes.iter().copied())?;
 
     //println!("{:?}", &opcodes);
 
     println!("allocating buffer...");
-    let mut data: Vec<u8> = (0..data_len).map(|_| 0).collect();
+    let mut data: Box<[u8; DATA_LEN]> = alloc_const();
     println!("allocation done...");
 
     println!("{}", opcodes_to_string(&opcodes));
 
     let start = std::time::Instant::now();
     //execute(&opcodes, &mut data, input);
-    unsafe { execute_unsafe(&opcodes, &mut data, input) };
+    
+    let stdout = &mut std::io::stdout().lock();
+    execute(&opcodes, &mut data, input, stdout);
     println!("elapsed: {:?}", start.elapsed());
 
     Ok(())
@@ -218,34 +221,32 @@ fn opcodes_to_string(opcodes: &[Opcode]) -> String {
 }
 
 #[inline(never)]
-fn execute(opcodes: &[Opcode], data: &mut [u8], input: &[u8]) {
+fn execute(opcodes: &[Opcode], data: &mut [u8; DATA_LEN], input: &[u8], stdout: &mut std::io::StdoutLock<'static>) {
     let mut input = input.iter().copied();
-    let mut pc: i32 = 0;
-    let mut dp: i32 = 0;
+    let mut pc: usize = 0;
+    let mut dp: usize = 0;
     loop {
-        let Some(opcode) = opcodes.get(pc as usize) else { break };
+        let Some(opcode) = opcodes.get(pc) else { break };
 
         match opcode {
             Opcode::Add(i) => {
-                data[dp as usize] = data[dp as usize].wrapping_add(*i);
+                data[dp] = data[dp].wrapping_add(*i);
             }
             Opcode::BranchZero(i) => {
-                if data[dp as usize] == 0 {
+                if data[dp] == 0 {
                     pc = *i as _;
-                    continue;
                 }
             }
             Opcode::BranchNotZero(i) => {
-                if data[dp as usize] != 0 {
+                if data[dp] != 0 {
                     pc = *i as _;
-                    continue;
                 }
             }
             Opcode::Right(i) => {
                 dp = dp.wrapping_add(*i as _);
             }
             Opcode::Dot => {
-                print!("{}", char::from_u32(data[dp as usize].into()).unwrap());
+                let _ = stdout.write(&[data[dp]]);
             }
             Opcode::Comma => {
                 data[dp as usize] = input.next().unwrap();
@@ -253,78 +254,20 @@ fn execute(opcodes: &[Opcode], data: &mut [u8], input: &[u8]) {
             Opcode::Clear => data[dp as usize] = 0,
             Opcode::AddTo(i) => {
                 let from = dp as usize;
-                let to = (dp + i) as usize;
+                let to = (dp.wrapping_add(*i as _)) as usize;
 
-                if data[from] != 0 {
-                    let tmp = data[from];
+                let tmp = data[from];
+                if tmp != 0 {
                     data[from] = data[from].wrapping_sub(tmp);
                     data[to] = data[to].wrapping_add(tmp);
                 }
             }
             Opcode::Seek(i) => {
                 while data[dp as usize] != 0 {
-                    dp += *i;
+                    dp = dp.wrapping_add(*i as _);
                 }
             }
         }
         pc += 1
-    }
-}
-
-#[inline(never)]
-unsafe fn execute_unsafe(opcodes: &[Opcode], data: &mut [u8], input: &[u8]) {
-    let mut input = input.iter().copied();
-    let mut pc: i32 = 0;
-    let mut dp: i32 = 0;
-
-    loop {
-        let Some(opcode) = opcodes.get(pc as usize) else { break };
-
-        match opcode {
-            Opcode::Add(i) => {
-                data[dp as usize] = data[dp as usize].wrapping_add(*i);
-            }
-            Opcode::BranchZero(i) => {
-                if data[dp as usize] == 0 {
-                    pc = *i as _;
-                    continue;
-                }
-            }
-            Opcode::BranchNotZero(i) => {
-                if data[dp as usize] != 0 {
-                    pc = *i as _;
-                    continue;
-                }
-            }
-            Opcode::Right(i) => {
-                dp = dp.wrapping_add(*i as _);
-            }
-            Opcode::Dot => {
-                print!("{}", char::from_u32(data[dp as usize].into()).unwrap());
-            }
-            Opcode::Comma => {
-                data[dp as usize] = input.next().unwrap();
-            }
-            Opcode::Clear => data[dp as usize] = 0,
-            Opcode::AddTo(i) => {
-                let from = dp as usize;
-                let to = (dp + i) as usize;
-
-                if data[from] != 0 {
-                    let tmp = data[from];
-                    data[from] = data[from].wrapping_sub(tmp);
-                    data[to] = data[to].wrapping_add(tmp);
-                }
-            }
-            Opcode::Seek(i) => {
-                while data[dp as usize] != 0 {
-                    dp += *i;
-                }
-            }
-        }
-        pc += 1;
-        if opcodes.len() == pc as _ {
-            break;
-        }
     }
 }
