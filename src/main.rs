@@ -93,24 +93,6 @@ fn compile_execute<ENGINE: BfEngine>(
     }
 }
 
-enum NewOpcode {
-    //Add(u8),
-    //Right(i16),
-    AddRight(u8, i16),
-
-    //Clear, = addto(0, canary)?
-    //AddTo(i16),
-    //Set(u8),
-    SetAddTo(u8, i16),
-
-    Seek(i16),
-
-    BranchZero(u16),
-    BranchNotZero(u16),
-    Dot,
-    Comma,
-}
-
 fn main() -> Result<(), &'static str> {
     let mut args = std::env::args().skip(1);
 
@@ -133,14 +115,14 @@ fn main() -> Result<(), &'static str> {
         opcodes.iter().copied(),
         input
     )));
-    reports.push(dbg!(compile_execute::<MergeTokenEngineExtra>(
-        opcodes.iter().copied(),
-        input
-    )));
-    reports.push(dbg!(compile_execute::<MergeTokenEngine>(
-        opcodes.iter().copied(),
-        input
-    )));
+    //reports.push(dbg!(compile_execute::<MergeTokenEngineExtra>(
+    //    opcodes.iter().copied(),
+    //    input
+    //)));
+    //reports.push(dbg!(compile_execute::<MergeTokenEngine>(
+    //    opcodes.iter().copied(),
+    //    input
+    //)));
 
     dbg!(reports);
 
@@ -457,7 +439,23 @@ mod merge_token_engine {
 use shift_add_engine::*;
 mod shift_add_engine {
     use super::{BasicOpcode, BfEngine, Write, DATA_LEN};
+    //enum NewOpcode {
+    //    //Add(u8),
+    //    //Right(i16),
+    //    AddRight(u8, i16),
 
+    //    //Clear, = addto(0, canary)?
+    //    //AddTo(i16),
+    //    //Set(u8),
+    //    SetAddTo(u8, i16),
+
+    //    Seek(i16),
+
+    //    BranchZero(u16),
+    //    BranchNotZero(u16),
+    //    Dot,
+    //    Comma,
+    //}
     #[derive(Copy, Clone, Debug, Eq, PartialEq)]
     pub(super) enum Opcode {
         /// Open
@@ -465,10 +463,16 @@ mod shift_add_engine {
         /// Close
         BranchNotZero(u16),
         AddRight(u8, i16),
+        Clear,
+        //AddTo(i16),
+        AddTo(i16),
+        Seek(i16),
         //Add(u8),
         //Right(i16),
         Dot,
         Comma,
+
+        Exit,
     }
 
     pub(super) struct ShiftAddEngine {}
@@ -488,38 +492,34 @@ mod shift_add_engine {
                 let Some(opcode) = iter.next() else { break };
 
                 match opcode {
-                    BasicOpcode::Add => buffer.push(AddRight(1, 0)),
-                    BasicOpcode::Sub => buffer.push(AddRight(-1_i32 as _, 0)),
-                    BasicOpcode::Right => buffer.push(AddRight(0, 1)),
-                    BasicOpcode::Left => buffer.push(AddRight(0, -1_i32 as _)),
-                    //BasicOpcode::Add => {
-                    //    if let Some(Add(p)) = buffer.last_mut() {
-                    //        *p = p.wrapping_add(1);
-                    //    } else {
-                    //        buffer.push(Add(1))
-                    //    }
-                    //}
-                    //BasicOpcode::Sub => {
-                    //    if let Some(Add(p)) = buffer.last_mut() {
-                    //        *p = p.wrapping_sub(1)
-                    //    } else {
-                    //        buffer.push(Add(-1_i32 as _))
-                    //    }
-                    //}
-                    //BasicOpcode::Right => {
-                    //    if let Some(Right(p)) = buffer.last_mut() {
-                    //        *p = p.wrapping_add(1)
-                    //    } else {
-                    //        buffer.push(Right(1))
-                    //    }
-                    //}
-                    //BasicOpcode::Left => {
-                    //    if let Some(Right(p)) = buffer.last_mut() {
-                    //        *p = p.wrapping_sub(1)
-                    //    } else {
-                    //        buffer.push(Right(-1 as _))
-                    //    }
-                    //}
+                    BasicOpcode::Add => {
+                        if let Some(AddRight(p, 0)) = buffer.last_mut() {
+                            *p = p.wrapping_add(1)
+                        } else {
+                            buffer.push(AddRight(1, 0))
+                        }
+                    }
+                    BasicOpcode::Sub => {
+                        if let Some(AddRight(p, 0)) = buffer.last_mut() {
+                            *p = p.wrapping_add(-1_i32 as _)
+                        } else {
+                            buffer.push(AddRight(-1_i32 as _, 0))
+                        }
+                    }
+                    BasicOpcode::Right => {
+                        if let Some(AddRight(_, p)) = buffer.last_mut() {
+                            *p = p.wrapping_add(1)
+                        } else {
+                            buffer.push(AddRight(0, 1))
+                        }
+                    }
+                    BasicOpcode::Left => {
+                        if let Some(AddRight(_, p)) = buffer.last_mut() {
+                            *p = p.wrapping_add(-1_i32 as _)
+                        } else {
+                            buffer.push(AddRight(0, -1_i32 as _))
+                        }
+                    }
                     BasicOpcode::Open => {
                         open_stack.push(buffer.len());
                         buffer.push(BranchZero(0));
@@ -530,6 +530,17 @@ mod shift_add_engine {
                         buffer[other] = BranchZero(this.try_into().unwrap());
 
                         match &buffer[..] {
+                            &[.., BranchZero(_), AddRight(_, 0)] => {
+                                buffer.truncate(buffer.len() - 2);
+                                buffer.push(Clear);
+                            }
+                            &[.., BranchZero(_), AddRight(255, x), AddRight(1, y)] if -x == y => {
+                                buffer.truncate(buffer.len() - 3);
+                                buffer.push(AddTo(x));
+                            }
+                            &[.., BranchZero(_), AddRight(_, x)] => {
+                                buffer.push(Seek(x));
+                            }
                             _ => {
                                 buffer.push(BranchNotZero(other.try_into().unwrap()));
                             }
@@ -546,14 +557,16 @@ mod shift_add_engine {
                     _ => (),
                 }
             }
+            buffer.push(Exit);
 
             if !open_stack.is_empty() {
                 return Err("unbalanced brackets: extra [");
             } else {
-                Ok(buffer)
+                Ok(dbg!(buffer))
             }
         }
-
+        
+        #[inline(never)]
         fn execute(
             opcodes: &[Self::OPCODE],
             data: &mut [u8; DATA_LEN],
@@ -564,34 +577,48 @@ mod shift_add_engine {
             let mut pc: usize = 0;
             let mut dp: usize = 0;
             loop {
-                let Some(opcode) = opcodes.get(pc) else { break };
+                //let Some(opcode) = opcodes.get(pc) else { break };
+                unsafe {
+                    let opcode = opcodes.get_unchecked(pc);
+                    match opcode {
+                        Opcode::AddRight(a, i) => {
+                            *data.get_unchecked_mut(dp) = data.get_unchecked(dp).wrapping_add(*a);
+                            dp = dp.wrapping_add(*i as _) % DATA_LEN;
+                        }
+                        Opcode::BranchZero(i) => {
+                            if *data.get_unchecked(dp) == 0 {
+                                pc = *i as _;
+                            }
+                        }
+                        Opcode::BranchNotZero(i) => {
+                            if *data.get_unchecked(dp) != 0 {
+                                pc = *i as _;
+                            }
+                        }
+                        Opcode::Dot => {
+                            let _ = stdout.write(&[*data.get_unchecked(dp)]);
+                        }
+                        Opcode::Comma => {
+                            let Some(c) = input.next() else { break };
+                            *data.get_unchecked_mut(dp) = c;
+                        }
+                        Opcode::Clear => {
+                            *data.get_unchecked_mut(dp) = 0;
+                        }
+                        Opcode::AddTo(i) => {
+                            let to = ((dp.wrapping_add(*i as _)) as usize) % DATA_LEN;
 
-                match opcode {
-                    Opcode::AddRight(a, i) => {
-                        data[dp] = data[dp].wrapping_add(*a);
-                        dp = dp.wrapping_add(*i as _);
-                    }
-                    //Opcode::Add(i) => {
-                    //    data[dp] = data[dp].wrapping_add(*i);
-                    //}
-                    //Opcode::Right(i) => {
-                    //    dp = dp.wrapping_add(*i as _);
-                    //}
-                    Opcode::BranchZero(i) => {
-                        if data[dp] == 0 {
-                            pc = *i as _;
+                            let tmp = *data.get_unchecked(dp);
+
+                            *data.get_unchecked_mut(to) = data.get_unchecked(to).wrapping_add(tmp);
+                            *data.get_unchecked_mut(dp) = 0;
                         }
-                    }
-                    Opcode::BranchNotZero(i) => {
-                        if data[dp] != 0 {
-                            pc = *i as _;
+                        Opcode::Seek(i) => {
+                            while *data.get_unchecked(dp) != 0 {
+                                dp = dp.wrapping_add(*i as _);
+                            }
                         }
-                    }
-                    Opcode::Dot => {
-                        let _ = stdout.write(&[data[dp]]);
-                    }
-                    Opcode::Comma => {
-                        data[dp as usize] = input.next().unwrap();
+                        Opcode::Exit => { break; }
                     }
                 }
                 pc += 1
