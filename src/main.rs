@@ -439,33 +439,18 @@ mod merge_token_engine {
 use shift_add_engine::*;
 mod shift_add_engine {
     use super::{BasicOpcode, BfEngine, Write, DATA_LEN};
-    //enum NewOpcode {
-    //    //Add(u8),
-    //    //Right(i16),
-    //    AddRight(u8, i16),
-
-    //    //Clear, = addto(0, canary)?
-    //    //AddTo(i16),
-    //    //Set(u8),
-    //    SetAddTo(u8, i16),
-
-    //    Seek(i16),
-
-    //    BranchZero(u16),
-    //    BranchNotZero(u16),
-    //    Dot,
-    //    Comma,
-    //}
     #[derive(Copy, Clone, Debug, Eq, PartialEq)]
     pub(super) enum Opcode {
         /// Open
         BranchZero(u16),
         /// Close
         BranchNotZero(u16),
-        AddRight(u8, i16),
+        AddRight(u8, i16), // inc, shift
         Clear,
         //AddTo(i16),
-        AddTo(i16),
+        AddTo(i16), // introduce set?
+        SubTo(i16), // intrucude set?
+
         Seek(i16),
         //Add(u8),
         //Right(i16),
@@ -534,11 +519,20 @@ mod shift_add_engine {
                                 buffer.truncate(buffer.len() - 2);
                                 buffer.push(Clear);
                             }
-                            &[.., BranchZero(_), AddRight(255, x), AddRight(1, y)] if -x == y => {
+                            &[.., BranchZero(_), AddRight(255, x), AddRight(1, y)]
+                                if -x == y && x != 0 =>
+                            {
                                 buffer.truncate(buffer.len() - 3);
                                 buffer.push(AddTo(x));
                             }
+                            &[.., BranchZero(_), AddRight(255, x), AddRight(255, y)]
+                                if -x == y && x != 0 =>
+                            {
+                                buffer.truncate(buffer.len() - 3);
+                                buffer.push(SubTo(x));
+                            }
                             &[.., BranchZero(_), AddRight(_, x)] => {
+                                buffer.truncate(buffer.len() - 2);
                                 buffer.push(Seek(x));
                             }
                             _ => {
@@ -549,12 +543,30 @@ mod shift_add_engine {
                     BasicOpcode::Dot => buffer.push(Dot),
                     BasicOpcode::Comma => buffer.push(Comma),
                 }
+                //match &buffer[..] {
+                //    &[.., Clear, AddRight(x, _)] if x != 0 => println!("AAA"),
+                //    &[.., Clear, _] => println!("BB"),
+                //    _ => (),
+                //}
+                let mut redundant_code_found = true;
                 match &buffer[..] {
-                    &[.., AddRight(0, 0)] => {
-                        println!("found redundant code {:?}", buffer);
-                        let _ = buffer.pop();
+                    &[.., AddRight(_, 0), Clear] => {
+                        buffer.truncate(buffer.len() - 2);
+                        buffer.push(Clear);
                     }
-                    _ => (),
+                    &[.., Clear, a @ AddTo(_)] => {
+                        buffer.truncate(buffer.len() - 2);
+                        buffer.push(a);
+                        panic!();
+                    }
+                    &[.., AddRight(0, 0)] => {
+                        let _ = buffer.pop();
+                        panic!();
+                    }
+                    _ => redundant_code_found = false,
+                }
+                if redundant_code_found {
+                    println!("found redundant code");
                 }
             }
             buffer.push(Exit);
@@ -562,10 +574,10 @@ mod shift_add_engine {
             if !open_stack.is_empty() {
                 return Err("unbalanced brackets: extra [");
             } else {
-                Ok(dbg!(buffer))
+                Ok(buffer)
             }
         }
-        
+
         #[inline(never)]
         fn execute(
             opcodes: &[Self::OPCODE],
@@ -576,10 +588,13 @@ mod shift_add_engine {
             let mut input = input.iter().copied();
             let mut pc: usize = 0;
             let mut dp: usize = 0;
+
+            let mut profile: Vec<usize> = (0..opcodes.len()).map(|_| 0).collect();
             loop {
                 //let Some(opcode) = opcodes.get(pc) else { break };
                 unsafe {
                     let opcode = opcodes.get_unchecked(pc);
+                    profile[pc] += 1;
                     match opcode {
                         Opcode::AddRight(a, i) => {
                             *data.get_unchecked_mut(dp) = data.get_unchecked(dp).wrapping_add(*a);
@@ -613,15 +628,43 @@ mod shift_add_engine {
                             *data.get_unchecked_mut(to) = data.get_unchecked(to).wrapping_add(tmp);
                             *data.get_unchecked_mut(dp) = 0;
                         }
+                        Opcode::SubTo(i) => {
+                            let to = ((dp.wrapping_add(*i as _)) as usize) % DATA_LEN;
+
+                            let tmp = *data.get_unchecked(dp);
+
+                            *data.get_unchecked_mut(to) = data.get_unchecked(to).wrapping_sub(tmp);
+                            *data.get_unchecked_mut(dp) = 0;
+                        }
                         Opcode::Seek(i) => {
                             while *data.get_unchecked(dp) != 0 {
                                 dp = dp.wrapping_add(*i as _);
                             }
                         }
-                        Opcode::Exit => { break; }
+                        Opcode::Exit => {
+                            break;
+                        }
                     }
                 }
                 pc += 1
+            }
+
+            {
+                let mut increment = 0;
+                for (line, (el, count)) in opcodes.iter().zip(&profile).enumerate() {
+                    if let Opcode::BranchNotZero(_) = el {
+                        increment -= 1
+                    }
+                    print!("{line:>5}: {count:>8} ");
+                    for _ in 0..increment {
+                        print!("    ");
+                    }
+                    println!("{el:?}");
+                    if let Opcode::BranchZero(_) = el {
+                        increment += 1
+                    }
+                }
+                dbg!(profile.iter().enumerate().max_by_key(|a| a.1));
             }
         }
     }
